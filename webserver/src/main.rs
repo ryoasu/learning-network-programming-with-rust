@@ -4,12 +4,13 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
+use std::path::Path;
 use std::{env, process, str};
 #[macro_use]
 extern crate log;
 
 const SERVER: Token = Token(0);
-const WEBROOT: &str = "/webroot";
+const WEBROOT: &str = "./webroot";
 
 struct WebServer {
     listening_socket: TcpListener,
@@ -152,12 +153,27 @@ fn make_response(buffer: &[u8]) -> Result<Vec<u8>, failure::Error> {
     };
 
     let method = captures[1].to_string();
-    let path = format!(
-        "{}{}{}",
-        env::current_dir()?.display(),
-        WEBROOT,
-        &captures[2]
-    );
+
+    // 絶対パスのWEBROOT
+    let absolute_webroot = match Path::new(WEBROOT).canonicalize() {
+        Err(_) => return create_message_from_code(500, None),
+        Ok(path) => path,
+    };
+    // ディレクトリトラバーサルを防ぐための正規表現
+    let path_regex_str = format!(r"^{}.*$", absolute_webroot.to_str().unwrap());
+    let path_pattern = Regex::new(&path_regex_str)?;
+    // ディレクトリトラバーサルを防ぐために正規化したパスに対して、前方一致するか(WEBROOT配下のパスか)確認
+    let path = match absolute_webroot.join(&captures[2]).canonicalize() {
+        Err(_) => return create_message_from_code(404, None),
+        Ok(path) => {
+            if path_pattern.is_match(path.to_str().unwrap()) {
+                path
+            } else {
+                return create_message_from_code(404, None);
+            }
+        }
+    };
+
     let _version = captures[3].to_string();
 
     if method == "GET" {
@@ -198,6 +214,11 @@ fn create_message_from_code(
         404 => Ok("HTTP/1.0, 404 Not Found \r\nServer: mio webserver\r\n\r\n"
             .to_string()
             .into_bytes()),
+        500 => Ok(
+            "HTTP/1.0, 500 Internal Server Error \r\nServer: mio webserver\r\n\r\n"
+                .to_string()
+                .into_bytes(),
+        ),
         501 => Ok(
             "HTTP/1.0, 501 Not Implemented \r\nServer: mio webserver\r\n\r\n"
                 .to_string()
